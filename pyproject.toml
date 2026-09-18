@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml_toolkit"
+version = "0.1.0"
+description = "Reusable Machine Learning Toolkit"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Andrew Wamala Kyanjo"}
+]
+dependencies = [
+    "pandas",
+    "numpy",
+    "matplotlib",
+    "seaborn",
+]
+
+[project.optional-dependencies]
+ml = ["scikit-learn"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
