@@ -1,4 +1,4 @@
-# ml_toolkit
+# ml-gearbox
 
 A reusable set of pandas-based functions for two jobs every ML project needs before modeling:
 
@@ -18,7 +18,8 @@ pip install -e .
 ## Quickstart
 
 ```python
-from ml_toolkit import run_data_audit, iqr_outlier_summary, plot_correlation_heatmap, correlation_matrix
+from ml_gearbox.audit import run_data_audit
+from ml_gearbox.eda import iqr_outlier_summary, plot_correlation_heatmap, correlation_matrix
 
 # Step 1: is the data trustworthy?
 audit = run_data_audit(df, target_col="default", id_col="customer_id")
