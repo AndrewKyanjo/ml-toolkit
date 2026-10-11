@@ -18,6 +18,7 @@ env/
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
+.pytest_cache/
 
 # VS Code / IDE settings
 .vscode/

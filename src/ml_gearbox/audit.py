@@ -3,6 +3,17 @@ import operator as op
 import numpy as np
 import pandas as pd
 
+
+def _validate_column(df: pd.DataFrame, column: str, argument: str) -> None:
+    """Reject invalid or missing explicitly requested column names."""
+    if not isinstance(column, str):
+        raise TypeError(f"{argument} must be a non-empty string.")
+    if not column:
+        raise ValueError(f"{argument} must be a non-empty string.")
+    if column not in df.columns:
+        raise ValueError(f"{argument} {column!r} is not a column in the dataframe.")
+
+
 # ==========================================
 # 1. TARGET, ID, DUPLICATES
 # ==========================================
@@ -10,6 +21,7 @@ import pandas as pd
 
 def target_report(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
     """Returns the class distribution and percentages of the target variable."""
+    _validate_column(df, target_col, "target_col")
     summary = (
         df[target_col]
         .value_counts(dropna=False)
@@ -23,6 +35,7 @@ def target_report(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
 
 def id_report(df: pd.DataFrame, id_col: str) -> dict:
     """Audits the unique identifier column for missing or duplicate values."""
+    _validate_column(df, id_col, "id_col")
     return {
         "total_rows": len(df),
         "unique_ids": int(df[id_col].nunique()),
@@ -43,6 +56,8 @@ def duplicate_report(df: pd.DataFrame, id_col: str | None = None) -> dict:
        serious data-integrity problem than a plain duplicate, because you
        don't know which row is correct.
     """
+    if id_col is not None:
+        _validate_column(df, id_col, "id_col")
     full_dupe_count = int(df.duplicated().sum())
     report = {"full_row_duplicates": full_dupe_count}
 
@@ -421,7 +436,7 @@ def cross_field_validation(df: pd.DataFrame, rules: list[tuple[str, str, str]]) 
 def run_data_audit(
     df: pd.DataFrame,
     target_col: str,
-    id_col: str,
+    id_col: str | None = None,
     expected_schema: dict | None = None,
     range_rules: dict | None = None,
     cross_field_rules: list[tuple[str, str, str]] | None = None,
@@ -431,13 +446,20 @@ def run_data_audit(
     of reports. expected_schema, range_rules, and cross_field_rules are
     optional: pass them in once you know what "valid" looks like for this
     specific dataset, and their reports get added automatically.
+
+    When id_col is omitted, the "id" report is None and duplicate checks
+    compare the original full rows only. No identifier is inferred or added.
+    Explicit target and ID columns must exist in the dataframe.
     """
+    _validate_column(df, target_col, "target_col")
+    if id_col is not None:
+        _validate_column(df, id_col, "id_col")
     categorical_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
 
     results = {
         "schema": schema_report(df),
         "target": target_report(df, target_col),
-        "id": id_report(df, id_col),
+        "id": id_report(df, id_col) if id_col is not None else None,
         "duplicates": duplicate_report(df, id_col),
         "missingness": missingness_report(df),
         "hidden_missingness": hidden_missing_report(df),
