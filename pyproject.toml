@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ml-gearbox"
-version = "0.1.0"
+version = "0.1.1"
 description = "Reusable Machine Learning Toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,6 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = ["scikit-learn"]
+parquet = ["pyarrow"]
+dev = ["pytest", "build", "twine"]
 
 [project.urls]
 Homepage = "https://github.com/AndrewKyanjo/ml-toolkit"
