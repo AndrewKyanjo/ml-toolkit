@@ -1,19 +1,30 @@
 # ml-gearbox
 
-A reusable set of pandas-based functions for two jobs every ML project needs before modeling:
+A reusable set of pandas-based functions for inspecting datasets and preserving train/test membership across notebooks.
 
 - **`audit`** — is this dataset trustworthy? (missingness, duplicates, schema, validity)
 - **`eda`** — what does this dataset actually look like, and how does it relate to the target?
+- **`splitting`** — create a train/test split once, save its row assignments, and restore it later.
+
+Version **0.1.1** adds optional IDs in the audit wrapper and reusable Parquet splits.
 
 This README documents every function currently in the toolkit: what it checks, what it expects from you, what it returns, and — most importantly — **what decision to make once you see the result.** It's meant to be read like a reference manual, not front-to-back.
 
 ## Install
 
 ```bash
-pip install -e .
+pip install "ml-gearbox[ml,parquet]==0.1.1"
 ```
 
-(from the project root, where `pyproject.toml` lives). This installs the package in "editable" mode, so changes to the source are picked up immediately without reinstalling.
+The `ml` extra installs scikit-learn for splitting; `parquet` installs PyArrow for saving and reading split files. Audit and EDA work with the base package: `pip install ml-gearbox==0.1.1`.
+
+For local development, run this from the project root, where `pyproject.toml` lives:
+
+```bash
+pip install -e ".[ml,parquet]"
+```
+
+Editable mode picks up changes to the source without reinstalling.
 
 ## Quickstart
 
@@ -22,9 +33,10 @@ from ml_gearbox.audit import run_data_audit
 from ml_gearbox.eda import iqr_outlier_summary, plot_correlation_heatmap, correlation_matrix
 
 # Step 1: is the data trustworthy?
-audit = run_data_audit(df, target_col="default", id_col="customer_id")
+audit = run_data_audit(df, target_col="default")
 print(audit["missingness"])
 print(audit["duplicates"])
+# If each row has a unique identifier, optionally pass id_col="transaction_id".
 
 # Step 2: once it's clean, explore it
 outliers = iqr_outlier_summary(df, columns=["age", "income"])
@@ -32,16 +44,18 @@ corr = correlation_matrix(df, columns=["age", "income", "tenure"])
 plot_correlation_heatmap(corr)
 ```
 
-## How to think about the two modules
+## How to use the modules
 
 Run **`audit` first, always**. It answers "can I trust this data at all?" Nothing in `eda` is meaningful if your dataset has silent duplicate IDs, 40% hidden missingness, or a target column that's actually a string when you expect numeric.
 
 Once audit comes back clean (or you've fixed what it found), move to **`eda`** to understand *shape*: distributions, outliers, correlations, and how features relate to your target.
 
+Use **`splitting`** to save the train/test membership that later notebooks will reuse. Keep its row key when adding features, and exclude the key from model inputs. Fit any transformations that learn statistics on training rows only.
+
 ### Suggested order of operations
 
 1. `schema_report` — get the lay of the land (dtypes, missingness, uniqueness, in one table)
-2. `id_report` + `duplicate_report` — is each row a genuine, unique observation?
+2. `id_report` when an ID exists, plus `duplicate_report` — check row identity and duplicate observations
 3. `missingness_report` + `hidden_missing_report` — where are the gaps, including disguised ones?
 4. `category_normalization_check` — are your categories cleaner than they look?
 5. `infinite_value_report` — any `inf` values that will silently break downstream math?
@@ -151,11 +165,130 @@ These three are different from everything above: they don't infer what's "wrong"
 
 ### Master wrapper
 
-#### `run_data_audit(df, target_col, id_col, expected_schema=None, range_rules=None, cross_field_rules=None) -> dict`
+#### `run_data_audit(df, target_col, id_col=None, expected_schema=None, range_rules=None, cross_field_rules=None) -> dict`
 - **Checks:** everything above, in one call.
-- **Expects:** `target_col` and `id_col` are required. `expected_schema`, `range_rules`, `cross_field_rules` are optional — pass them once you know what "valid" means for this dataset, and their reports get added to the output automatically.
+- **Expects:** `target_col` is an existing column name. `id_col` is optional; if supplied, it must name an existing column. `expected_schema`, `range_rules`, `cross_field_rules` are optional — pass them once you know what "valid" means for this dataset, and their reports get added to the output automatically.
 - **Returns:** a dict keyed by report name (`"schema"`, `"target"`, `"id"`, `"duplicates"`, `"missingness"`, `"hidden_missingness"`, `"category_normalization"`, `"infinite_values"`, `"cardinality"`, `"constant_features"`, `"numeric_profile"`, plus the three validation reports if you supplied rules for them).
+- **Without an ID:** `audit["id"]` is `None`, meaning the identifier report is unavailable. Full-row duplicate checking still runs. The audit does not infer an ID, use the dataframe index as an ID, or generate a key. Check duplicates before creating unique row keys, which would make otherwise identical rows appear different.
 - **Act on it:** treat this as your standard "first thing I run on any new dataset" call. Loop through the dict and eyeball each report before writing a single line of feature engineering.
+
+The audit reports findings; it does not clean the dataframe or split it. A misspelled ID column raises an error rather than silently disabling ID checks.
+
+---
+
+## `splitting.py` reference
+
+### Save row identity and train/test membership
+
+```python
+from ml_gearbox.splitting import create_split, load_split
+
+result = create_split(
+    df,
+    id_col=None,
+    stratify_col=None,
+    group_col=None,
+    test_size=0.2,
+    random_state=42,
+    path="split.parquet",
+    overwrite=False,
+)
+```
+
+`create_split` copies the input dataframe, assigns every row to `train` or `test`, saves the assignments, and returns a dictionary:
+
+| Key | What it contains |
+| --- | --- |
+| `df` | A copy of the full dataset, with a row key added if needed |
+| `id_col` | The row-key column name, such as `transaction_id` or `_row_id` |
+| `trainidx` | Zero-based row positions for selecting training rows from this returned dataframe |
+| `testidx` | Zero-based row positions for selecting test rows from this returned dataframe |
+| `assignments` | The saved membership table, with `row_id` and `split` columns |
+
+The dataframe you pass in is unchanged. Row identity follows these rules:
+
+1. If you supply `id_col`, use that column. Its values must be unique and non-null.
+2. Otherwise, reuse an existing `_row_id` column after the same validation.
+3. Otherwise, generate unique UUID strings in a new `_row_id` column on the returned copy.
+
+Generated keys belong to this saved dataset. Preserve them in subsequent notebooks; creating keys again from the original dataframe creates different identities. Pandas index labels and row positions are not persistent identities.
+
+| Argument | Purpose |
+| --- | --- |
+| `id_col` | Identify individual observations when restoring membership |
+| `stratify_col` | Keep category proportions approximately similar in train and test; usually a classification target |
+| `group_col` | Keep all observations with the same group value together |
+| `test_size` | Test fraction or count; defaults to `0.2` |
+| `random_state` | Random seed; defaults to `42` |
+| `path` | Destination for the membership file |
+| `overwrite` | Allow replacement of an existing destination; defaults to `False` |
+
+With neither strategy column, splitting is random. With `stratify_col`, splitting balances the selected categories. With `group_col`, it splits groups; **`test_size` then refers to groups**, so the proportion of test rows can differ. Combining stratification and grouping is unsupported and raises an error.
+
+For example, if a customer has several transactions, `customer_id` repeats and cannot identify each transaction. Use a unique `transaction_id` or generated `_row_id` for identity, and `group_col="customer_id"` to keep each customer's transactions together.
+
+The function rejects missing strategy columns or values, invalid split sizes, too few groups, and class counts that cannot support the requested stratification. Train and test must be nonempty, disjoint, and cover every row. An existing destination raises an error unless you explicitly set `overwrite=True`.
+
+`split.parquet` contains only the mapping:
+
+| row_id | split |
+| --- | --- |
+| a123 | train |
+| b456 | test |
+
+Parquet metadata records the schema version, original ID column and key dtype, strategy and strategy column, requested test size, random seed, and original row count. Feature values and target values are not stored in this file.
+
+### Restore the saved membership
+
+```python
+parts = load_split(df, "split.parquet", allow_subset=False)
+train_df = parts["train"]
+test_df = parts["test"]
+```
+
+`load_split` reads the saved mapping and metadata, finds the recorded key column in `df`, and returns training and test copies with the input's feature columns, order, and index preserved. Reordering rows or adding features is fine as long as every row retains its key. It never reruns the random split or regenerates missing keys.
+
+By default, the input must contain exactly the saved set of keys. Use `allow_subset=True` after deliberately filtering out original rows. Every remaining key must still have an assignment; a subset can yield an empty train or test dataframe.
+
+The loader rejects missing, null, duplicate, unknown, or incompatible keys; malformed metadata; duplicate mapping keys; and missing or unsupported split labels. The complete saved mapping must include both `train` and `test`. Equivalent integer dtypes after a Parquet round trip are accepted, but lossy conversions such as changing string ID `"001"` to integer `1` are rejected.
+
+A one-to-many join can duplicate keys and will fail validation. Define how the resulting observations should be identified before restoring a row-level split. Matching row keys restores membership; it does not prove that the source feature or target values have stayed unchanged.
+
+### Two notebooks, explained line by line
+
+Assume `raw_df` already contains your original data and its prediction column is actually named `target`. Replace `"target"` with your own column name, such as `"default"` or `"churn"`.
+
+```python
+import pandas as pd
+from ml_gearbox.audit import run_data_audit
+from ml_gearbox.splitting import create_split, load_split
+
+# Notebook 1
+audit = run_data_audit(raw_df, target_col="target")
+result = create_split(raw_df, stratify_col="target", path="split.parquet")
+result["df"].to_parquet("prepared.parquet", index=False)
+train_df = result["df"].iloc[result["trainidx"]].copy()
+test_df = result["df"].iloc[result["testidx"]].copy()
+
+# Notebook 2: import pandas and load_split here too.
+df = pd.read_parquet("prepared.parquet")
+parts = load_split(df, "split.parquet")
+train_df, test_df = parts["train"], parts["test"]
+```
+
+1. **`audit = run_data_audit(...)` inspects the original data.** It stores the reports in the dictionary `audit`. Look at reports such as `audit["missingness"]` and `audit["duplicates"]`, and address problems before continuing. No rows are cleaned or split by this line. Because no `id_col` was supplied, `audit["id"]` is `None`.
+2. **`result = create_split(...)` makes and saves the split.** `stratify_col="target"` requests approximately similar target-class proportions in both parts. The default is about 80% training and 20% test. With no existing ID, it adds `_row_id` to a copy and writes each key's train/test assignment to `split.parquet`. `result` is a dictionary holding the copied dataframe, indices, and assignment information; it is not itself a dataframe.
+3. **`result["df"].to_parquet(...)` saves the full dataset with its keys.** `result["df"]` retrieves the dataframe from that dictionary. `to_parquet` writes all of its rows and columns, including the target and `_row_id`, to `prepared.parquet`. `index=False` leaves out pandas' separate index labels; it keeps `_row_id` because that is an ordinary column. This save is what lets another notebook recognize the same observations.
+4. **`train_df = result["df"].iloc[result["trainidx"]].copy()` selects training rows.** `result["trainidx"]` retrieves their row positions, for example `[0, 2, 4]`. `.iloc[...]` selects those positions from the returned dataframe. `.copy()` gives you a separate dataframe to work with. The next line does the same for test positions. These indices apply to this dataframe's current order; use `load_split` after reordering rows.
+
+The files serve different purposes:
+
+| File | Contents | Why save it? |
+| --- | --- | --- |
+| `prepared.parquet` | The complete dataset and its preserved row keys | Let later notebooks load the same observations |
+| `split.parquet` | Row keys, train/test labels, and split metadata | Restore each observation's original membership |
+
+In Notebook 2, `pd.read_parquet` loads the complete saved dataset. You can add features or change row order while keeping the key column. `load_split` matches those keys to `split.parquet`, and `parts["train"]` and `parts["test"]` retrieve the resulting dataframes. The final assignment puts those two results into `train_df` and `test_df`. You do not create another split.
 
 ---
 
